@@ -3,7 +3,7 @@ name: Build APK dari ZIP
 on:
   push:
     paths:
-      - 'porsikecil-android-*.zip'
+      - 'porsikecil-android*.zip'
   workflow_dispatch:
 
 permissions:
@@ -20,12 +20,12 @@ jobs:
       - name: Pilih ZIP terbaru (berdasarkan waktu commit)
         run: |
           best=""; best_t=0
-          for f in porsikecil-android-*.zip; do
+          for f in porsikecil-android*.zip; do
             [ -e "$f" ] || continue
             t=$(git log -1 --format=%ct -- "$f")
             if [ "${t:-0}" -ge "$best_t" ]; then best="$f"; best_t="${t:-0}"; fi
           done
-          if [ -z "$best" ]; then echo "Tidak ada porsikecil-android-*.zip di repo"; exit 1; fi
+          if [ -z "$best" ]; then echo "Tidak ada porsikecil-android*.zip di repo"; exit 1; fi
           echo "ZIP_FILE=$best" >> "$GITHUB_ENV"
           echo "Dipakai: $best"
 
@@ -49,25 +49,23 @@ jobs:
         with:
           gradle-version: '8.9'
 
-      - name: Siapkan kunci tetap (opsional)
-        env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+      - name: Siapkan kunci tetap (dari dalam ZIP)
         run: |
-          if [ -n "$KEYSTORE_BASE64" ]; then
-            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
-            echo "KEYSTORE_PATH=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
-            echo "Memakai kunci tetap dari secret"
+          ks="$PROJ_DIR/signing/porsikecil.keystore"
+          if [ -f "$ks" ]; then
+            echo "KEYSTORE_PATH=$ks" >> "$GITHUB_ENV"
+            echo "Memakai kunci tetap dari ZIP"
           else
-            echo "Secret KEYSTORE_BASE64 tidak ada; memakai kunci debug bawaan"
+            echo "signing/porsikecil.keystore tidak ada di ZIP; memakai kunci debug acak (update harus hapus dulu)"
           fi
 
       - name: Build APK debug
         working-directory: ${{ env.PROJ_DIR }}
         env:
           VERSION_CODE: ${{ github.run_number }}
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
-          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
-          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+          KEYSTORE_PASSWORD: porsikecil123
+          KEY_ALIAS: porsikecil
+          KEY_PASSWORD: porsikecil123
         run: gradle assembleDebug --stacktrace
 
       - name: Tes unit (tidak menghalangi APK)

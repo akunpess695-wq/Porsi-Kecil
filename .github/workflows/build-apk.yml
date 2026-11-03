@@ -40,7 +40,13 @@ jobs:
 
       - name: Build APK debug
         working-directory: ${{ env.SRC }}
-        run: gradle assembleDebug --no-daemon --stacktrace
+        run: |
+          set +e
+          gradle assembleDebug --no-daemon 2>&1 | tee build.log
+          STATUS=${PIPESTATUS[0]}
+          echo "=============== ERROR KOTLIN (e:) ==============="
+          grep -E '^e: |error:|Unresolved|What went wrong' -A2 build.log | head -n 60
+          exit $STATUS
 
       - name: Unggah APK
         uses: actions/upload-artifact@v4

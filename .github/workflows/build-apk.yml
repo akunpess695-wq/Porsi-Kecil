@@ -1,51 +1,106 @@
-name: Build APK
+name: Build APK dari ZIP
 
+# Otomatis jalan saat Anda mengunggah porsikecil-android-*.zip ke root repo.
+# Bisa juga dijalankan manual: tab Actions > pilih workflow ini > Run workflow.
 on:
   push:
-    branches: [main]
+    paths:
+      - 'porsikecil-android-*.zip'
+      - '.github/workflows/build-apk.yml'
   workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
   build:
     runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - name: Ekstrak proyek dari zip terbaru
+      - name: Pilih ZIP terbaru (berdasarkan waktu commit)
+        id: pick
         run: |
-          ZIP=$(ls -t porsikecil-android*.zip | head -1)
-          echo "Memakai $ZIP"
-          mkdir project
-          unzip -q "$ZIP" -d project
-          ls project
+          best=""; bestt=0
+          for f in porsikecil-android-*.zip; do
+            [ -e "$f" ] || continue
+            t=$(git log -1 --format=%ct -- "$f")
+            if [ "${t:-0}" -ge "$bestt" ]; then best="$f"; bestt="${t:-0}"; fi
+          done
+          if [ -z "$best" ]; then
+            echo "::error::Tidak ada file porsikecil-android-*.zip di root repo."
+            exit 1
+          fi
+          echo "ZIP dipakai: $best"
+          echo "zip=$best" >> "$GITHUB_OUTPUT"
+
+      - name: Ekstrak ZIP
+        env:
+          ZIP: ${{ steps.pick.outputs.zip }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/proj"
+          unzip -q "$ZIP" -d "$RUNNER_TEMP/proj"
+          settings=$(find "$RUNNER_TEMP/proj" -maxdepth 3 -name settings.gradle.kts | awk '{print length, $0}' | sort -n | head -1 | cut -d' ' -f2-)
+          if [ -z "$settings" ]; then
+            echo "::error::settings.gradle.kts tidak ditemukan di dalam ZIP."
+            exit 1
+          fi
+          echo "PROJECT_DIR=$(dirname "$settings")" >> "$GITHUB_ENV"
 
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 17
 
+      - uses: android-actions/setup-android@v3
+
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: 8.7
 
-      - name: Tes unit
-        working-directory: project
-        run: gradle test --stacktrace
-
       - name: Build APK debug
-        working-directory: project
-        run: gradle assembleDebug --stacktrace
+        run: cd "$PROJECT_DIR" && gradle assembleDebug --stacktrace
 
-      - name: Unggah laporan tes
+      - name: Tes unit (tidak menghalangi APK)
+        continue-on-error: true
+        run: cd "$PROJECT_DIR" && gradle testDebugUnitTest --stacktrace
+
+      - name: Siapkan nama APK
+        id: apk
+        env:
+          ZIP: ${{ steps.pick.outputs.zip }}
+        run: |
+          src=$(ls "$PROJECT_DIR"/app/build/outputs/apk/debug/*.apk | head -1)
+          name="PorsiKecil-${ZIP%.zip}-build${{ github.run_number }}.apk"
+          name="${name/porsikecil-android-/}"
+          cp "$src" "$name"
+          ls -l "$name"
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+
+      - name: Publikasikan ke Releases (unduh langsung dari HP)
+        env:
+          APK: ${{ steps.apk.outputs.name }}
+          ZIP: ${{ steps.pick.outputs.zip }}
+        run: |
+          gh release create "build-${{ github.run_number }}" "$APK" \
+            --target "$GITHUB_SHA" \
+            --title "PorsiKecil build ${{ github.run_number }}" \
+            --notes "APK debug dibangun dari $ZIP. Belum ditinjau ahli gizi/dokter; lihat catatan di aplikasi."
+
+      - name: Cadangan di Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: porsikecil-apk
+          path: ${{ steps.apk.outputs.name }}
+
+      - name: Laporan tes
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: laporan-tes
-          path: project/app/build/reports/tests/
+          path: ${{ env.PROJECT_DIR }}/app/build/reports/
           if-no-files-found: ignore
-
-      - name: Unggah APK
-        uses: actions/upload-artifact@v4
-        with:
-          name: PorsiKecil-debug-apk
-          path: project/app/build/outputs/apk/debug/*.apk

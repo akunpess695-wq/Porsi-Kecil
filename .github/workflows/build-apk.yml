@@ -1,0 +1,107 @@
+name: Build APK dari ZIP
+
+on:
+  push:
+    paths:
+      - 'porsikecil-android-*.zip'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Pilih ZIP terbaru (berdasarkan waktu commit)
+        run: |
+          best=""; best_t=0
+          for f in porsikecil-android-*.zip; do
+            [ -e "$f" ] || continue
+            t=$(git log -1 --format=%ct -- "$f")
+            if [ "${t:-0}" -ge "$best_t" ]; then best="$f"; best_t="${t:-0}"; fi
+          done
+          if [ -z "$best" ]; then echo "Tidak ada porsikecil-android-*.zip di repo"; exit 1; fi
+          echo "ZIP_FILE=$best" >> "$GITHUB_ENV"
+          echo "Dipakai: $best"
+
+      - name: Ekstrak ZIP
+        run: |
+          mkdir -p "$RUNNER_TEMP/proj"
+          unzip -q "$ZIP_FILE" -d "$RUNNER_TEMP/proj"
+          root=$(dirname "$(find "$RUNNER_TEMP/proj" -name settings.gradle.kts -not -path '*/node_modules/*' | head -n 1)")
+          if [ -z "$root" ] || [ "$root" = "." ]; then echo "settings.gradle.kts tidak ditemukan di ZIP"; exit 1; fi
+          echo "PROJ_DIR=$root" >> "$GITHUB_ENV"
+          echo "Project di: $root"
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      # Android SDK sudah tersedia di ubuntu-latest, jadi setup-android tidak diperlukan.
+
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Siapkan kunci tetap (opsional)
+        env:
+          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            echo "KEYSTORE_PATH=$RUNNER_TEMP/release.keystore" >> "$GITHUB_ENV"
+            echo "Memakai kunci tetap dari secret"
+          else
+            echo "Secret KEYSTORE_BASE64 tidak ada; memakai kunci debug bawaan"
+          fi
+
+      - name: Build APK debug
+        working-directory: ${{ env.PROJ_DIR }}
+        env:
+          VERSION_CODE: ${{ github.run_number }}
+          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.KEY_PASSWORD }}
+        run: gradle assembleDebug --stacktrace
+
+      - name: Tes unit (tidak menghalangi APK)
+        continue-on-error: true
+        working-directory: ${{ env.PROJ_DIR }}
+        run: gradle testDebugUnitTest --stacktrace
+
+      - name: Siapkan nama APK
+        run: |
+          apk=$(find "$PROJ_DIR/app/build/outputs/apk/debug" -name '*.apk' | head -n 1)
+          if [ -z "$apk" ]; then echo "APK tidak ditemukan"; exit 1; fi
+          out="PorsiKecil-build${{ github.run_number }}.apk"
+          cp "$apk" "$out"
+          echo "APK_NAME=$out" >> "$GITHUB_ENV"
+
+      - name: Publikasikan ke Releases (unduh langsung)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "build-${{ github.run_number }}" "$APK_NAME" \
+            --title "PorsiKecil build ${{ github.run_number }}" \
+            --notes "APK debug dari ${ZIP_FILE}" \
+            --target "${{ github.sha }}"
+
+      - name: Cadangan di Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: porsikecil-apk
+          path: ${{ env.APK_NAME }}
+
+      - name: Laporan tes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: laporan-tes
+          path: ${{ env.PROJ_DIR }}/app/build/reports/tests
+          if-no-files-found: ignore

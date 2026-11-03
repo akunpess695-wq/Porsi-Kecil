@@ -1,55 +1,51 @@
 name: Build APK
 
 on:
-  workflow_dispatch:
   push:
     branches: [main]
-    paths:
-      - 'porsikecil-android.zip'
-      - '.github/workflows/build-apk.yml'
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - name: Ambil repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Pasang Java 17
-        uses: actions/setup-java@v4
+      - name: Ekstrak proyek dari zip terbaru
+        run: |
+          ZIP=$(ls -t porsikecil-android*.zip | head -1)
+          echo "Memakai $ZIP"
+          mkdir project
+          unzip -q "$ZIP" -d project
+          ls project
+
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: '17'
+          java-version: 17
 
-      - name: Ekstrak project dari zip
-        run: |
-          set -e
-          ls -la
-          unzip -q porsikecil-android.zip -d project
-          SRC=$(dirname "$(find project -maxdepth 3 -name settings.gradle.kts | head -n 1)")
-          echo "Project ditemukan di: $SRC"
-          echo "SRC=$SRC" >> "$GITHUB_ENV"
-
-      - name: Setujui lisensi Android SDK
-        run: yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" --licenses > /dev/null || true
-
-      - name: Pasang Gradle
-        uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v4
         with:
-          gradle-version: '8.9'
+          gradle-version: 8.7
+
+      - name: Tes unit
+        working-directory: project
+        run: gradle test --stacktrace
 
       - name: Build APK debug
-        working-directory: ${{ env.SRC }}
-        run: |
-          set +e
-          gradle assembleDebug --no-daemon 2>&1 | tee build.log
-          STATUS=${PIPESTATUS[0]}
-          echo "=============== ERROR KOTLIN (e:) ==============="
-          grep -E '^e: |error:|Unresolved|What went wrong' -A2 build.log | head -n 60
-          exit $STATUS
+        working-directory: project
+        run: gradle assembleDebug --stacktrace
+
+      - name: Unggah laporan tes
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: laporan-tes
+          path: project/app/build/reports/tests/
+          if-no-files-found: ignore
 
       - name: Unggah APK
         uses: actions/upload-artifact@v4
         with:
           name: PorsiKecil-debug-apk
-          path: ${{ env.SRC }}/app/build/outputs/apk/debug/*.apk
+          path: project/app/build/outputs/apk/debug/*.apk
